@@ -1,0 +1,311 @@
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+
+  "Description" : "quest Core stack",
+
+  "Parameters" : {
+  
+    "VpcId" : {
+      "Type" : "String",
+      "Description" : "ID of target VPC"
+    },
+
+    "STUB" : {
+      "Type" : "String",
+      "Description" : "Application name",
+      "Default" : "quest"
+    },
+    
+    "Subnets" : {
+      "Type" : "CommaDelimitedList",
+      "Description" : "The list of SubnetIds. Requires at least two"
+    },
+    
+    "SSHLocation" : {
+      "Description" : "Lockdown SSH access a bastion host (default: anywhere)",
+      "Type" : "String",
+      "MinLength": "9",
+      "MaxLength": "18",
+      "Default" : "0.0.0.0/0",
+      "AllowedPattern" : "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})",
+      "ConstraintDescription" : "must be a valid CIDR range."
+    },
+    
+    "CUSTOMER" : {
+      "Description" : "Short name of stakeholder",
+      "Type" : "String",
+      "Default" : "rearc"
+    },
+    
+    "ENV" : {
+      "Description" : "Application environment this vpc will contain",
+      "Type" : "String",
+      "AllowedValues" : [
+        "dev",
+        "qa",
+        "uat",
+        "staging",
+        "production"
+      ],
+      "ConstraintDescription" : "must be either dev, qa, staging or production",
+      "Default" : "production"
+    },
+    
+    "KEYPAIR" : {
+      "Description": "The keypair/name that is used to ssh into the ec2",
+      "Type" : "String"
+    },
+    
+    "DOCKERIMAGEURL" : {
+      "Description" : "The url of the docker image",
+      "Type" : "String",
+      "Default" : "khanhvertible/public:nodeapp"
+    }
+    
+  },
+
+  "Resources" : {
+    "questALB" : {
+      "Type" : "AWS::ElasticLoadBalancingV2::LoadBalancer",
+      "DependsOn" : "questPublicLoadBalancerSecurityGroup",
+      "Properties" : {
+        "Subnets" : { "Ref" : "Subnets" },
+        "SecurityGroups": [{
+          "Fn::GetAtt": ["questPublicLoadBalancerSecurityGroup", "GroupId"]
+        }],
+        "Tags" : [
+          {
+            "Key"   : "Name",
+            "Value" : {
+              "Fn::Join" : [ "-", [ { "Ref" : "AWS::StackName" }, "pub-lb" ] ]
+            }
+          },
+          {
+            "Key"   : "STUB",
+            "Value" : { "Ref" : "STUB" }
+          },
+          {
+            "Key"   : "CUSTOMER",
+            "Value" : { "Ref" : "CUSTOMER" }
+          },
+          {
+            "Key"   : "ENV",
+            "Value" : { "Ref" : "ENV" }
+          }
+        ]
+      }
+    },
+    
+    "questALBTargetGroup" : {
+      "Type" : "AWS::ElasticLoadBalancingV2::TargetGroup",
+      "Properties" : {
+        "HealthCheckEnabled" : "true",
+        "HealthCheckIntervalSeconds" : "30",
+        "HealthCheckPath" : "/",
+        "HealthCheckPort" : "8080",
+        "HealthCheckProtocol" : "HTTP",
+        "HealthCheckTimeoutSeconds" : "5",
+        "HealthyThresholdCount" : "5",
+        "Matcher" : {
+          "HttpCode" : "200,301,302"
+        },
+        "Targets" : [{
+          "Id": {"Ref": "questEC2"},
+          "Port" : "8080"
+        }],
+        "Port" : "8080",
+        "Protocol" : "HTTP",
+        "Tags" : [
+          {
+            "Key"   : "Name",
+            "Value" : {
+              "Fn::Join" : [ "-", [ { "Ref" : "AWS::StackName" }, "pub-lb-tg" ] ]
+            }
+          },
+          {
+            "Key"   : "STUB",
+            "Value" : { "Ref" : "STUB" }
+          },
+          {
+            "Key"   : "CUSTOMER",
+            "Value" : { "Ref" : "CUSTOMER" }
+          },
+          {
+            "Key"   : "ENV",
+            "Value" : { "Ref" : "ENV" }
+          }
+        ],
+        "TargetType" : "instance",
+        "UnhealthyThresholdCount" : "2",
+        "VpcId" : { "Ref" : "VpcId" }
+      }
+    },
+    
+    "questALBListener80" : {
+      "Type" : "AWS::ElasticLoadBalancingV2::Listener",
+        "Properties" : {
+          "DefaultActions" : [{
+            "ForwardConfig" : {
+              "TargetGroups" : [{
+                "TargetGroupArn" : { "Ref" : "questALBTargetGroup" },
+                "Weight" : "1"
+              }]
+            },
+            "TargetGroupArn" : { "Ref" : "questALBTargetGroup" },
+            "Type" : "forward"
+          }],
+          "LoadBalancerArn" : { "Ref" : "questALB" },
+          "Port" : "80",
+          "Protocol" : "HTTP"
+        }
+    },
+
+    "questServerSecurityGroup" : {
+      "Type" : "AWS::EC2::SecurityGroup",
+      "DependsOn" : "questPublicLoadBalancerSecurityGroup",
+      "Properties" : {
+        "GroupDescription" : "Allow access from load balancer and ssh",
+        "VpcId" : { "Ref" : "VpcId" },
+        "SecurityGroupIngress" : [
+          { 
+            "IpProtocol" : "tcp",
+            "FromPort" : "8080",
+            "ToPort" : "8080",
+            "SourceSecurityGroupId" : {
+              "Fn::GetAtt" : [ "questPublicLoadBalancerSecurityGroup", "GroupId" ]
+            }
+          },
+          {
+            "IpProtocol" : "tcp",
+            "FromPort" : "22",
+            "ToPort" : "22",
+            "CidrIp" : { "Ref" : "SSHLocation" }
+          }
+        ],
+        "Tags" : [
+          {
+            "Key"   : "Name",
+            "Value" : {
+              "Fn::Join" : [ "-", [ { "Ref" : "AWS::StackName" }, "web-secgroup" ] ]
+            }
+          },
+          {
+            "Key" : "Network",
+            "Value" : "Public"
+          },
+          {
+            "Key"   : "STUB",
+            "Value" : { "Ref" : "STUB" }
+          },
+          {
+            "Key"   : "CUSTOMER",
+            "Value" : { "Ref" : "CUSTOMER" }
+          },
+          {
+            "Key"   : "ENV",
+            "Value" :  { "Ref" : "ENV" }
+          }
+        ]
+      }
+    },
+
+    "questPublicLoadBalancerSecurityGroup" : {
+      "Type" : "AWS::EC2::SecurityGroup",
+      "Properties" : {
+        "GroupDescription" : "Public ELB Security Group with HTTP/HTTPS access on port 80 from the internet",
+        "VpcId" : { "Ref" : "VpcId" },
+        "SecurityGroupIngress" : [
+          {
+            "IpProtocol" : "tcp",
+            "FromPort" : "80",
+            "ToPort" : "80",
+            "CidrIp" : "0.0.0.0/0"
+          },
+          {
+            "IpProtocol" : "tcp",
+            "FromPort" : "443",
+            "ToPort" : "443",
+            "CidrIp" : "0.0.0.0/0"
+          }
+        ],
+        "Tags" : [
+          {
+            "Key"   : "Name",
+            "Value" : {
+              "Fn::Join" : [ "-", [ { "Ref" : "AWS::StackName" }, "pub-lb-secgroup" ] ]
+            }
+          },
+          {
+            "Key" : "Network",
+            "Value" : "Public"
+          },
+          {
+            "Key"   : "STUB",
+            "Value" : { "Ref" : "STUB" }
+          },
+          {
+            "Key"   : "CUSTOMER",
+            "Value" : { "Ref" : "CUSTOMER" }
+          },
+          {
+            "Key"   : "ENV",
+            "Value" : { "Ref" : "ENV" }
+          }
+        ]
+      }
+    },
+    
+    "questEC2" : {
+      "Type" : "AWS::EC2::Instance",
+      "Properties" : {
+        "ImageId" : "ami-02354e95b39ca8dec",
+        "InstanceType" : "t2.micro",
+        "KeyName" : {"Ref" : "KEYPAIR" },
+        "SecurityGroupIds" : [ {"Ref" : "questServerSecurityGroup"} ],
+        "SubnetId" : { "Fn::Select" : [ "1", {"Ref": "Subnets"} ] },
+        "UserData"       : { "Fn::Base64" : { "Fn::Join" : ["", [
+             "#!/bin/bash -xe\n",
+             "yum update -y\n",
+             "yum install docker -y\n",
+             "systemctl start docker\n",
+             "docker pull ", { "Ref" : "DOCKERIMAGEURL" },"\n",
+             "export SECRET_WORD=banana\n", 
+             "docker run -e SECRET_WORD -p 8080:3000 ", { "Ref" : "DOCKERIMAGEURL" },"\n", 
+        ]]}},
+        "Tags" : [
+          {
+            "Key"   : "Name",
+            "Value" : {
+              "Fn::Join" : [ "-", [ { "Ref" : "AWS::StackName" }, "web-secgroup" ] ]
+            }
+          },
+          {
+            "Key" : "Network",
+            "Value" : "Public"
+          },
+          {
+            "Key"   : "STUB",
+            "Value" : { "Ref" : "STUB" }
+          },
+          {
+            "Key"   : "CUSTOMER",
+            "Value" : { "Ref" : "CUSTOMER" }
+          },
+          {
+            "Key"   : "ENV",
+            "Value" :  { "Ref" : "ENV" }
+          }
+        ]
+      }
+    }
+  },
+
+  "Outputs" : {
+    "WebSite" : {
+      "Description" : "Origin URL of the website",
+      "Value" :  {
+         "Fn::GetAtt": [ "questALB", "DNSName" ]
+      }
+    }
+  }
+}
